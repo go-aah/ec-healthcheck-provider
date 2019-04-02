@@ -79,7 +79,6 @@ func (c *Collector) runChecks() {
 			defer wg.Done()
 			//change the dependency health values
 			err := c.reporters[name].Reporter.Check()
-			c.mu.Lock()
 			if err != nil {
 				// increment unhealthy counter if it's a hard dependency
 				if !c.reporters[name].SoftFail {
@@ -132,4 +131,9 @@ func (c *healthController) HealthcheckHandler(hc *Collector) {
 	} else {
 		c.Reply().ServiceUnavailable().JSON(hc.globalHealthMsg)
 	}
+}
+
+// Ping is an Aah handler for always returning 200 OK
+func (c *healthController) Ping() {
+	c.Reply().Ok().Text("pong!")
 }

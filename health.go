@@ -107,12 +107,12 @@ func (c *Collector) runChecks() {
 	c.mu.Unlock()
 }
 
-// Register the collector in Aah application
+// Register the collector in aah application
 func (c *Collector) Register(app *aah.Application) {
 
 }
 
-// RegisterForDomain registers the collector in Aah specified domain
+// RegisterForDomain registers the collector in aah specified domain
 func (c *Collector) RegisterForDomain(app *aah.Application, domainName string) {
 
 }
@@ -122,7 +122,7 @@ type healthController struct {
 	*aah.Context
 }
 
-// HealthcheckHandler is an Aah handler to report the healthcheck
+// HealthcheckHandler is an aah handler to report the healthcheck
 func (c *healthController) HealthcheckHandler(hc *Collector) {
 	hc.mu.RLock()
 	defer hc.mu.RUnlock()
@@ -133,7 +133,7 @@ func (c *healthController) HealthcheckHandler(hc *Collector) {
 	}
 }
 
-// Ping is an Aah handler for always returning 200 OK
+// Ping is an aah handler for always returning 200 OK
 func (c *healthController) Ping() {
 	c.Reply().Ok().Text("pong!")
 }

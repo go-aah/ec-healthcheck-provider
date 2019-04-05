@@ -1,21 +1,28 @@
-package health // import "aahframe.work/ec/health"
+// Author: Adrián López (https://github.com/adrianlop)
+// Copyright (c) Jeevanandam M. (https://github.com/jeevatkm)
+// Source code and usage is governed by a MIT style
+// license that can be found in the LICENSE file.
+
+package health
 
 import (
-	aah "aahframe.work"
 	"fmt"
 	"sync"
 	"time"
+
+	"aahframe.work"
 )
 
-// Collector contains the dependencies to check
+// Collector contains the health reporters to check and its responded
+// data for the JSON response.
 type Collector struct {
-	reporters       map[string]*Config
-	globalHealth    bool
-	globalHealthMsg map[string]string
-	mu              sync.RWMutex
+	globalHealth  bool
+	reporters     map[string]*Config
+	reportersData map[string]string
+	mu            sync.RWMutex
 }
 
-// Reporter is the interface for a dependency that can be health-checked
+// Reporter interface for a dependency that can be health-checked.
 type Reporter interface {
 	// Check will return nil if dependency is reachable/healthy
 	// You should implement this func with a sensible timeout (< 3 or 5 sec)
@@ -26,26 +33,24 @@ type Reporter interface {
 type Config struct {
 	Name     string
 	Reporter Reporter
-	// SoftDep - if true it will allow errors so won't report unhealthy
-	SoftFail bool
-	// TODO: interval unused for now - got a global interval for all checks
-	// interval time.Duration
+	SoftFail bool // if true it will allow errors so won't report unhealthy
 }
 
-// NewCollector returns a Collector and periodically checks all its registered reporters
+// NewCollector method returns a `Collector` instance. It periodically checks
+// all its registered reporters.
 func NewCollector(interval time.Duration) *Collector {
 	if interval <= 0 {
 		// if interval is negative or 0, default to 10s interval checks
 		interval = 10
 	}
 	collector := &Collector{
-		reporters:    make(map[string]*Config),
-		globalHealth: true,
+		reporters:     make(map[string]*Config),
+		reportersData: make(map[string]string),
+		globalHealth:  true,
 	}
 	go func() {
 		t := time.NewTicker(interval * time.Second)
-		for {
-			<-t.C
+		for range t.C {
 			collector.runChecks()
 		}
 	}()
@@ -53,87 +58,88 @@ func NewCollector(interval time.Duration) *Collector {
 	return collector
 }
 
-// AddReporter adds a dependency to check it periodically
+// AddReporter method adds a dependency to health check reporter
+// that will be called per interval to get health report.
 func (c *Collector) AddReporter(config *Config) error {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	_, exists := c.reporters[config.Name]
-	if exists {
-		return fmt.Errorf("Reporter name '%s' already exists", config.Name)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, exists := c.reporters[config.Name]; exists {
+		return fmt.Errorf("health: reporter name '%s' already exists", config.Name)
 	}
 	c.reporters[config.Name] = config
 	return nil
 }
 
-// RunChecks performs a check in all the dependencies and update the global status
+// RunChecks method performs a check in all the dependencies and update the global status
 func (c *Collector) runChecks() {
 	//create syncgroup and check all dependencies
 	var wg sync.WaitGroup
-	wg.Add(len(c.reporters))
-
-	depsHealth := make(map[string]string)
-	unhealthy := 0
 	c.mu.RLock()
-	for name := range c.reporters {
-		go func(name string) {
+	wg.Add(len(c.reporters))
+	unhealthy := 0
+
+	for _, cfg := range c.reporters {
+		go func(rc *Config) {
 			defer wg.Done()
 			//change the dependency health values
-			err := c.reporters[name].Reporter.Check()
-			if err != nil {
-				// increment unhealthy counter if it's a hard dependency
-				if !c.reporters[name].SoftFail {
+			if err := rc.Reporter.Check(); err != nil {
+				if !rc.SoftFail {
+					// increment unhealthy counter if it's a hard dependency
 					unhealthy++
 				}
-				depsHealth[name] = "KO: " + err.Error()
+				c.mu.Lock()
+				c.reportersData[rc.Name] = "KO: " + err.Error()
+				c.mu.Unlock()
 			} else {
-				depsHealth[name] = "OK: Healthy"
+				c.mu.Lock()
+				c.reportersData[rc.Name] = "OK: Healthy"
+				c.mu.Unlock()
 			}
-
-		}(name)
+		}(cfg)
 	}
 	c.mu.RUnlock()
+
 	// wait for all the deps to finish the checks
 	wg.Wait()
 
-	// calculate the globalHealth (if 1+ services are unhealthy, globalHealth is unhealthy too)
-	globalHealth := true
-	if unhealthy != 0 {
-		globalHealth = false
-	}
 	// refresh the calculated globalHealth
 	c.mu.Lock()
-	c.globalHealth = globalHealth
-	c.globalHealthMsg = depsHealth
+	// calculate the globalHealth (if 1+ services are unhealthy, globalHealth is unhealthy too)
+	c.globalHealth = unhealthy == 0
 	c.mu.Unlock()
 }
 
 // Register the collector in aah application
-func (c *Collector) Register(app *aah.Application) {
-
+func (c *Collector) Register(app *aah.Application) error {
+	return nil
 }
 
 // RegisterForDomain registers the collector in aah specified domain
-func (c *Collector) RegisterForDomain(app *aah.Application, domainName string) {
-
+func (c *Collector) RegisterForDomain(app *aah.Application, domainName string) error {
+	return nil
 }
 
-// Controller only has the aah HTTP Context
+// HealthController provides an action methods for health check and ping
+// for the aah application.
 type healthController struct {
 	*aah.Context
 }
 
-// HealthcheckHandler is an aah handler to report the healthcheck
-func (c *healthController) HealthcheckHandler(hc *Collector) {
+// TODO this action may take input paramter, stil its not finalized....
+
+// Healthcheck action responds with reporters health state to the caller.
+func (c *healthController) Healthcheck(hc *Collector) {
 	hc.mu.RLock()
 	defer hc.mu.RUnlock()
 	if hc.globalHealth {
-		c.Reply().Ok().JSON(hc.globalHealthMsg)
+		c.Reply().Ok().JSON(hc.reportersData)
 	} else {
-		c.Reply().ServiceUnavailable().JSON(hc.globalHealthMsg)
+		c.Reply().ServiceUnavailable().JSON(hc.reportersData)
 	}
 }
 
-// Ping is an aah handler for always returning 200 OK
+// Ping action responds with static text response as `pong!` with
+// status `200 OK` to the caller.
 func (c *healthController) Ping() {
 	c.Reply().Ok().Text("pong!")
 }

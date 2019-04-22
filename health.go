@@ -7,20 +7,19 @@ package health
 
 import (
 	"fmt"
+	"net/http"
+	"path"
 	"sync"
 	"time"
 
 	"aahframe.work"
+	"aahframe.work/ainsp"
+	"aahframe.work/router"
 )
 
-// Collector contains the health reporters to check and its responded
-// data for the JSON response.
-type Collector struct {
-	globalHealth  bool
-	reporters     map[string]*Config
-	reportersData map[string]string
-	mu            sync.RWMutex
-}
+var (
+	defaultCollector *Collector
+)
 
 // Reporter interface for a dependency that can be health-checked.
 type Reporter interface {
@@ -36,26 +35,45 @@ type Config struct {
 	SoftFail bool // if true it will allow errors so won't report unhealthy
 }
 
+//‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾
+// Collector struct and its methods
+//______________________________________________________________________________
+
+// Collector contains the health reporters to check and its responded
+// data for the JSON response.
+type Collector struct {
+	globalHealth  bool
+	reporters     map[string]*Config
+	reportersData map[string]string
+	mu            sync.RWMutex
+}
+
 // NewCollector method returns a `Collector` instance. It periodically checks
 // all its registered reporters.
 func NewCollector(interval time.Duration) *Collector {
-	if interval <= 0 {
-		// if interval is negative or 0, default to 10s interval checks
-		interval = 10
-	}
-	collector := &Collector{
+	defaultCollector = &Collector{
 		reporters:     make(map[string]*Config),
 		reportersData: make(map[string]string),
 		globalHealth:  true,
 	}
-	go func() {
+
+	if interval <= 0 {
+		// if interval is negative or 0, default to 10s interval checks
+		interval = 10
+	}
+	go func(interval time.Duration) {
+		//sleep 5s + do initial runChecks, so we don't wait 10s when app starts
+		time.Sleep(5 * time.Second)
+		defaultCollector.runChecks()
+
+		// ticker to check reporters periodically using specified interval
 		t := time.NewTicker(interval * time.Second)
 		for range t.C {
-			collector.runChecks()
+			defaultCollector.runChecks()
 		}
-	}()
+	}(interval)
 
-	return collector
+	return defaultCollector
 }
 
 // AddReporter method adds a dependency to health check reporter
@@ -76,7 +94,6 @@ func (c *Collector) runChecks() {
 	var wg sync.WaitGroup
 	c.mu.RLock()
 	wg.Add(len(c.reporters))
-	unhealthy := 0
 
 	for _, cfg := range c.reporters {
 		go func(rc *Config) {
@@ -84,8 +101,9 @@ func (c *Collector) runChecks() {
 			//change the dependency health values
 			if err := rc.Reporter.Check(); err != nil {
 				if !rc.SoftFail {
-					// increment unhealthy counter if it's a hard dependency
-					unhealthy++
+					c.mu.Lock()
+					c.globalHealth = false
+					c.mu.Unlock()
 				}
 				c.mu.Lock()
 				c.reportersData[rc.Name] = "KO: " + err.Error()
@@ -101,45 +119,92 @@ func (c *Collector) runChecks() {
 
 	// wait for all the deps to finish the checks
 	wg.Wait()
-
-	// refresh the calculated globalHealth
-	c.mu.Lock()
-	// calculate the globalHealth (if 1+ services are unhealthy, globalHealth is unhealthy too)
-	c.globalHealth = unhealthy == 0
-	c.mu.Unlock()
 }
 
-// Register the collector in aah application
-func (c *Collector) Register(app *aah.Application) error {
+// Register method registers the health collector into aah application with
+// two routes `/healthcheck` and `/ping`.
+//
+// Provides optional base path or route prefix for the above routes.
+func (c *Collector) Register(app *aah.Application, basePath ...string) error {
+	routePrefix := ""
+	if len(basePath) > 0 {
+		routePrefix = basePath[0]
+	}
+	return registerInApp(app, app.Router().RootDomain().Key, routePrefix)
+}
+
+// RegisterForDomain method registers the health collector into
+// aah application with two routes `/healthcheck` and `/ping` for
+// given domain hostname.
+//
+// Provides optional base path or route prefix for the above routes.
+func (c *Collector) RegisterForDomain(app *aah.Application, domainName string, basePath ...string) error {
+	routePrefix := ""
+	if len(basePath) > 0 {
+		routePrefix = basePath[0]
+	}
+	return registerInApp(app, domainName, routePrefix)
+}
+
+func registerInApp(app *aah.Application, domainName, basePath string) error {
+	app.AddController((*healthController)(nil), []*ainsp.Method{
+		{Name: "Healthcheck"},
+		{Name: "Ping"},
+	})
+	hcRoute := &router.Route{
+		Name:   "healthcheck",
+		Path:   composeRoutePath(basePath, "healthcheck"),
+		Method: http.MethodGet,
+		Target: "aahframe.work/ec/health/healthController",
+		Action: "Healthcheck",
+	}
+	if err := app.Router().Lookup(domainName).AddRoute(hcRoute); err != nil {
+		return fmt.Errorf("health: cannot add route '%v': %v", hcRoute.Name, err.Error())
+	}
+	pingRoute := &router.Route{
+		Name:   "ping",
+		Path:   composeRoutePath(basePath, "ping"),
+		Method: http.MethodGet,
+		Target: "aahframe.work/ec/health/healthController",
+		Action: "Ping",
+	}
+	if err := app.Router().Lookup(domainName).AddRoute(pingRoute); err != nil {
+		return fmt.Errorf("health: cannot add route '%v': %v", hcRoute.Name, err.Error())
+	}
 	return nil
 }
 
-// RegisterForDomain registers the collector in aah specified domain
-func (c *Collector) RegisterForDomain(app *aah.Application, domainName string) error {
-	return nil
+func composeRoutePath(basePath, routePath string) string {
+	p := path.Join(basePath, routePath)
+	if p[0] == '/' {
+		return p
+	}
+	return "/" + p
 }
 
-// HealthController provides an action methods for health check and ping
+//‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾
+// HealthController struct and its methods
+//______________________________________________________________________________
+
+// HealthController provides action methods for health check and ping
 // for the aah application.
 type healthController struct {
 	*aah.Context
 }
 
-// TODO this action may take input paramter, stil its not finalized....
-
-// Healthcheck action responds with reporters health state to the caller.
-func (c *healthController) Healthcheck(hc *Collector) {
-	hc.mu.RLock()
-	defer hc.mu.RUnlock()
-	if hc.globalHealth {
-		c.Reply().Ok().JSON(hc.reportersData)
+// TODO: this action should take input parameter *Collector, to support multiple collectors
+// Healthcheck action responds with reporter's health status.
+func (c *healthController) Healthcheck() {
+	defaultCollector.mu.RLock()
+	defer defaultCollector.mu.RUnlock()
+	if defaultCollector.globalHealth {
+		c.Reply().Ok().JSON(defaultCollector.reportersData)
 	} else {
-		c.Reply().ServiceUnavailable().JSON(hc.reportersData)
+		c.Reply().ServiceUnavailable().JSON(defaultCollector.reportersData)
 	}
 }
 
-// Ping action responds with static text response as `pong!` with
-// status `200 OK` to the caller.
+// Ping action responds with static text response as `pong!` with status `200 OK`.
 func (c *healthController) Ping() {
-	c.Reply().Ok().Text("pong!")
+	c.Reply().Ok().Text("pong!\n")
 }

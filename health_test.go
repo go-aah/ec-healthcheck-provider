@@ -122,3 +122,48 @@ func TestHealthForceCheck(t *testing.T) {
 	// assert stuff
 	// }
 }
+
+func TestHealthComposeRoutePath(t *testing.T) {
+	testcases := []struct {
+		label     string
+		basePath  string
+		routePath string
+		result    string
+	}{
+		{
+			label:     "without basepath",
+			routePath: "/healthcheck",
+			result:    "/healthcheck",
+		},
+		{
+			label:     "without basepath and no route slash",
+			routePath: "healthcheck",
+			result:    "/healthcheck",
+		},
+		{
+			label:     "with basepath and slash",
+			basePath:  "/admin",
+			routePath: "/healthcheck",
+			result:    "/admin/healthcheck",
+		},
+		{
+			label:     "with basepath and no slash",
+			basePath:  "admin",
+			routePath: "/healthcheck",
+			result:    "/admin/healthcheck",
+		},
+		{
+			label:     "with basepath and no slash and no route slash",
+			basePath:  "admin",
+			routePath: "healthcheck",
+			result:    "/admin/healthcheck",
+		},
+	}
+
+	for _, tc := range testcases {
+		t.Run(tc.label, func(t *testing.T) {
+			result := composeRoutePath(tc.basePath, tc.routePath)
+			assert.Equal(t, tc.result, result)
+		})
+	}
+}

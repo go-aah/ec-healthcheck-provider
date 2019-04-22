@@ -7,10 +7,12 @@ package health
 
 import (
 	"fmt"
+	"net/http"
+	"path"
 	"sync"
 	"time"
 
-	aah "aahframe.work"
+	"aahframe.work"
 	"aahframe.work/ainsp"
 	"aahframe.work/router"
 )
@@ -18,15 +20,6 @@ import (
 var (
 	defaultCollector *Collector
 )
-
-// Collector contains the health reporters to check and its responded
-// data for the JSON response.
-type Collector struct {
-	globalHealth  bool
-	reporters     map[string]*Config
-	reportersData map[string]string
-	mu            sync.RWMutex
-}
 
 // Reporter interface for a dependency that can be health-checked.
 type Reporter interface {
@@ -40,6 +33,19 @@ type Config struct {
 	Name     string
 	Reporter Reporter
 	SoftFail bool // if true it will allow errors so won't report unhealthy
+}
+
+//‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾
+// Collector struct and its methods
+//______________________________________________________________________________
+
+// Collector contains the health reporters to check and its responded
+// data for the JSON response.
+type Collector struct {
+	globalHealth  bool
+	reporters     map[string]*Config
+	reportersData map[string]string
+	mu            sync.RWMutex
 }
 
 // NewCollector method returns a `Collector` instance. It periodically checks
@@ -88,7 +94,6 @@ func (c *Collector) runChecks() {
 	var wg sync.WaitGroup
 	c.mu.RLock()
 	wg.Add(len(c.reporters))
-	unhealthy := 0
 
 	for _, cfg := range c.reporters {
 		go func(rc *Config) {
@@ -96,8 +101,9 @@ func (c *Collector) runChecks() {
 			//change the dependency health values
 			if err := rc.Reporter.Check(); err != nil {
 				if !rc.SoftFail {
-					// increment unhealthy counter if it's a hard dependency
-					unhealthy++
+					c.mu.Lock()
+					c.globalHealth = false
+					c.mu.Unlock()
 				}
 				c.mu.Lock()
 				c.reportersData[rc.Name] = "KO: " + err.Error()
@@ -113,77 +119,72 @@ func (c *Collector) runChecks() {
 
 	// wait for all the deps to finish the checks
 	wg.Wait()
-
-	// refresh the calculated globalHealth
-	c.mu.Lock()
-	// calculate the globalHealth (if 1+ services are unhealthy, globalHealth is unhealthy too)
-	c.globalHealth = unhealthy == 0
-	c.mu.Unlock()
 }
 
-// Register the collector in aah application
-func (c *Collector) Register(app *aah.Application, basePath string) {
-	if basePath == "" {
-		basePath = "/_admin"
+// Register method registers the health collector into aah application with
+// two routes `/healthcheck` and `/ping`.
+//
+// Provides optional base path or route prefix for the above routes.
+func (c *Collector) Register(app *aah.Application, basePath ...string) error {
+	routePrefix := ""
+	if len(basePath) > 0 {
+		routePrefix = basePath[0]
 	}
-	// Register Healtcheck controller + routes
+	return registerInApp(app, app.Router().RootDomain().Key, routePrefix)
+}
+
+// RegisterForDomain method registers the health collector into
+// aah application with two routes `/healthcheck` and `/ping` for
+// given domain hostname.
+//
+// Provides optional base path or route prefix for the above routes.
+func (c *Collector) RegisterForDomain(app *aah.Application, domainName string, basePath ...string) error {
+	routePrefix := ""
+	if len(basePath) > 0 {
+		routePrefix = basePath[0]
+	}
+	return registerInApp(app, domainName, routePrefix)
+}
+
+func registerInApp(app *aah.Application, domainName, basePath string) error {
 	app.AddController((*healthController)(nil), []*ainsp.Method{
 		{Name: "Healthcheck"},
 		{Name: "Ping"},
 	})
 	hcRoute := &router.Route{
-		Name:   "HealthCheck",
-		Path:   basePath + "/health",
-		Method: "GET",
-		Target: "aahframe.work/ec/health/healthController",
-		Action: "Healthcheck",
-	}
-	if err := app.Router().RootDomain().AddRoute(hcRoute); err != nil {
-		app.Log().Errorf("Cannot add route '%v': %v", hcRoute.Name, err.Error())
-	}
-	pingRoute := &router.Route{
-		Name:   "Ping",
-		Path:   basePath + "/ping",
-		Method: "GET",
-		Target: "aahframe.work/ec/health/healthController",
-		Action: "Ping",
-	}
-	if err := app.Router().RootDomain().AddRoute(pingRoute); err != nil {
-		app.Log().Errorf("Cannot add route '%v': %v", hcRoute.Name, err.Error())
-	}
-}
-
-// RegisterForDomain registers the collector in aah specified domain
-func (c *Collector) RegisterForDomain(app *aah.Application, domainName, basePath string) {
-	if basePath == "" {
-		basePath = "/_admin"
-	}
-	// Register Healtcheck controller + routes
-	app.AddController((*healthController)(nil), []*ainsp.Method{
-		{Name: "Healthcheck"},
-		{Name: "Ping"},
-	})
-	hcRoute := &router.Route{
-		Name:   "HealthCheck",
-		Path:   basePath + "/health",
-		Method: "GET",
+		Name:   "healthcheck",
+		Path:   composeRoutePath(basePath, "healthcheck"),
+		Method: http.MethodGet,
 		Target: "aahframe.work/ec/health/healthController",
 		Action: "Healthcheck",
 	}
 	if err := app.Router().Lookup(domainName).AddRoute(hcRoute); err != nil {
-		app.Log().Errorf("Cannot add route '%v': %v", hcRoute.Name, err.Error())
+		return fmt.Errorf("health: cannot add route '%v': %v", hcRoute.Name, err.Error())
 	}
 	pingRoute := &router.Route{
-		Name:   "Ping",
-		Path:   basePath + "/ping",
-		Method: "GET",
+		Name:   "ping",
+		Path:   composeRoutePath(basePath, "ping"),
+		Method: http.MethodGet,
 		Target: "aahframe.work/ec/health/healthController",
 		Action: "Ping",
 	}
 	if err := app.Router().Lookup(domainName).AddRoute(pingRoute); err != nil {
-		app.Log().Errorf("Cannot add route '%v': %v", hcRoute.Name, err.Error())
+		return fmt.Errorf("health: cannot add route '%v': %v", hcRoute.Name, err.Error())
 	}
+	return nil
 }
+
+func composeRoutePath(basePath, routePath string) string {
+	p := path.Join(basePath, routePath)
+	if p[0] == '/' {
+		return p
+	}
+	return "/" + p
+}
+
+//‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾
+// HealthController struct and its methods
+//______________________________________________________________________________
 
 // HealthController provides action methods for health check and ping
 // for the aah application.

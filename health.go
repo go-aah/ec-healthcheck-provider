@@ -126,11 +126,7 @@ func (c *Collector) runChecks() {
 //
 // Provides optional base path or route prefix for the above routes.
 func (c *Collector) Register(app *aah.Application, basePath ...string) error {
-	routePrefix := ""
-	if len(basePath) > 0 {
-		routePrefix = basePath[0]
-	}
-	return registerInApp(app, app.Router().RootDomain().Key, routePrefix)
+	return c.RegisterForDomain(app, app.Router().RootDomain().Key, basePath...)
 }
 
 // RegisterForDomain method registers the health collector into
@@ -175,11 +171,7 @@ func registerInApp(app *aah.Application, domainName, basePath string) error {
 }
 
 func composeRoutePath(basePath, routePath string) string {
-	p := path.Join(basePath, routePath)
-	if p[0] == '/' {
-		return p
-	}
-	return "/" + p
+	return path.Join("/", basePath, routePath)
 }
 
 //‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾

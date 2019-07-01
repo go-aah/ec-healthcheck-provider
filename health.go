@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"aahframe.work"
+	aah "aahframe.work"
 	"aahframe.work/ainsp"
 	"aahframe.work/router"
 )
@@ -153,6 +153,7 @@ func registerInApp(app *aah.Application, domainName, basePath string) error {
 		Method: http.MethodGet,
 		Target: "aahframe.work/ec/health/healthController",
 		Action: "Healthcheck",
+		Auth:   "anonymous",
 	}
 	if err := app.Router().Lookup(domainName).AddRoute(hcRoute); err != nil {
 		return fmt.Errorf("health: cannot add route '%v': %v", hcRoute.Name, err.Error())
@@ -163,6 +164,7 @@ func registerInApp(app *aah.Application, domainName, basePath string) error {
 		Method: http.MethodGet,
 		Target: "aahframe.work/ec/health/healthController",
 		Action: "Ping",
+		Auth:   "anonymous",
 	}
 	if err := app.Router().Lookup(domainName).AddRoute(pingRoute); err != nil {
 		return fmt.Errorf("health: cannot add route '%v': %v", hcRoute.Name, err.Error())

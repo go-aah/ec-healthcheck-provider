@@ -95,6 +95,7 @@ func (c *Collector) runChecks() {
 	c.mu.RLock()
 	wg.Add(len(c.reporters))
 
+	c.globalHealth = true
 	for _, cfg := range c.reporters {
 		go func(rc *Config) {
 			defer wg.Done()

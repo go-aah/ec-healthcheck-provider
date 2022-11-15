@@ -95,6 +95,7 @@ func (c *Collector) runChecks() {
 	c.mu.RLock()
 	wg.Add(len(c.reporters))
 
+	globalHealthy := true
 	for _, cfg := range c.reporters {
 		go func(rc *Config) {
 			defer wg.Done()
@@ -102,7 +103,7 @@ func (c *Collector) runChecks() {
 			if err := rc.Reporter.Check(); err != nil {
 				if !rc.SoftFail {
 					c.mu.Lock()
-					c.globalHealth = false
+					globalHealthy = false
 					c.mu.Unlock()
 				}
 				c.mu.Lock()
@@ -114,6 +115,15 @@ func (c *Collector) runChecks() {
 				c.mu.Unlock()
 			}
 		}(cfg)
+	}
+	if globalHealthy {
+		c.mu.Lock()
+		c.globalHealth = true
+		c.mu.Unlock()
+	} else {
+		c.mu.Lock()
+		c.globalHealth = false
+		c.mu.Unlock()
 	}
 	c.mu.RUnlock()
 

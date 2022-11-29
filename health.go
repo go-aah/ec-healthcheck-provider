@@ -92,7 +92,6 @@ func (c *Collector) AddReporter(config *Config) error {
 func (c *Collector) runChecks() {
 	//create syncgroup and check all dependencies
 	var wg sync.WaitGroup
-	c.mu.RLock()
 	wg.Add(len(c.reporters))
 
 	globalHealthy := true
@@ -116,6 +115,8 @@ func (c *Collector) runChecks() {
 			}
 		}(cfg)
 	}
+
+	// update global health status
 	if globalHealthy {
 		c.mu.Lock()
 		c.globalHealth = true
@@ -125,7 +126,6 @@ func (c *Collector) runChecks() {
 		c.globalHealth = false
 		c.mu.Unlock()
 	}
-	c.mu.RUnlock()
 
 	// wait for all the deps to finish the checks
 	wg.Wait()

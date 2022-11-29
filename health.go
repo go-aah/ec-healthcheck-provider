@@ -115,6 +115,11 @@ func (c *Collector) runChecks() {
 			}
 		}(cfg)
 	}
+
+	// wait for all the deps to finish the checks
+	wg.Wait()
+
+	// update global health status
 	if globalHealthy {
 		c.mu.Lock()
 		c.globalHealth = true
@@ -124,9 +129,6 @@ func (c *Collector) runChecks() {
 		c.globalHealth = false
 		c.mu.Unlock()
 	}
-
-	// wait for all the deps to finish the checks
-	wg.Wait()
 }
 
 // Register method registers the health collector into aah application with
